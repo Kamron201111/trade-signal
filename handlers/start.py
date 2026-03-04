@@ -8,27 +8,22 @@ from config import FREE_DAILY_LIMIT
 
 NAME, PHONE, BALANCE, SCREENSHOT, WAITING_PAYMENT = 0, 1, 2, 3, 4
 
-# Doimiy pastki keyboard
 def main_keyboard():
     return ReplyKeyboardMarkup([
         ["📊 Tahlil qilish", "📐 Strategiya"],
         ["💎 Premium", "👤 Profil"],
-    ], resize_keyboard=True, persistent=True)
+    ], resize_keyboard=True, is_persistent=True)
 
 async def cmd_start(update, context):
     user = update.effective_user
     db_user = db_get_user(user.id)
-
-    # Agar avval ro'yxatdan o'tgan bo'lsa — to'g'ri menyu
     if db_user:
         await update.message.reply_text(
-            "Xush kelibsiz! Nima qilmoqchisiz?",
+            "Xush kelibsiz!",
             reply_markup=main_keyboard()
         )
         await show_inline_menu(update, context)
         return ConversationHandler.END
-
-    # Yangi foydalanuvchi — faqat bir marta so'raladi
     await update.message.reply_text(
         "Assalomu alaykum!\n\n"
         "📈 TradeSignal Pro ga xush kelibsiz!\n\n"
@@ -59,14 +54,11 @@ async def get_phone(update, context):
         if not clean.isdigit() or len(clean) < 9:
             await update.message.reply_text("Noto'g'ri raqam. Qayta kiriting:")
             return PHONE
-
     user = update.effective_user
     full_name = context.user_data.get("full_name", user.full_name)
     db_register_user(user.id, user.username or "", full_name, phone)
-
     await update.message.reply_text(
-        "Tabriklaymiz! ✅\n\n"
-        "Ro'yxatdan muvaffaqiyatli o'tdingiz!\n\n"
+        "Tabriklaymiz! Ro'yxatdan o'tdingiz!\n\n"
         "Kuniga " + str(FREE_DAILY_LIMIT) + " ta bepul tahlil olasiz.",
         reply_markup=main_keyboard()
     )
@@ -79,20 +71,17 @@ async def show_inline_menu(update, context):
     usage = db_get_usage(user_id)
     remaining = "Cheksiz" if prem else str(FREE_DAILY_LIMIT - usage)
     badge = " 💎" if prem else ""
-
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("📊 Bozorni tahlil qilish", callback_data="analyze")],
         [InlineKeyboardButton("📐 Strategiyani tanlash", callback_data="strategy_menu")],
         [InlineKeyboardButton("💎 Premium obuna", callback_data="premium_info")],
         [InlineKeyboardButton("👤 Profil", callback_data="my_profile")],
     ])
-
     text = (
         "Bosh menyu" + badge + "\n\n"
         "Bugungi tahlillar: " + (str(usage) if not prem else "Cheksiz") + "\n"
         "Qolgan: " + remaining
     )
-
     if update.callback_query:
         await update.callback_query.edit_message_text(text, reply_markup=kb)
     else:
@@ -117,7 +106,7 @@ async def show_profile(update, context):
     if prem and user.get("premium_until"):
         from datetime import datetime
         until = datetime.fromisoformat(user["premium_until"])
-        prem_text += "\nMuddati: " + until.strftime("%d.%m.%Y")
+        prem_text += " (muddati: " + until.strftime("%d.%m.%Y") + ")"
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("Orqaga", callback_data="main_menu")]])
     await query.edit_message_text(
         "Mening profilim\n\n"
@@ -129,19 +118,13 @@ async def show_profile(update, context):
         reply_markup=kb
     )
 
-# Pastki keyboard tugmalarini ushlash
 async def handle_menu_buttons(update, context):
     text = update.message.text
     user = db_get_user(update.effective_user.id)
     if not user:
         await cmd_start(update, context)
         return
-
-    if text == "📊 Tahlil qilish":
-        # analyze callbackni simulate qilamiz
-        from handlers.market import start_analyze_text
-        await start_analyze_text(update, context)
-    elif text == "📐 Strategiya":
+    if text == "📐 Strategiya":
         await show_strategy_text(update, context)
     elif text == "💎 Premium":
         await show_premium_text(update, context)
