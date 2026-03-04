@@ -1,7 +1,7 @@
-import re, base64, json, asyncio, urllib.request, urllib.error, os
+import re, base64, json, asyncio, urllib.request, os
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 
 FOREX_PAIRS = [
     "EUR/USD","GBP/USD","USD/JPY","USD/CHF","USD/CAD","AUD/USD","NZD/USD",
@@ -25,7 +25,6 @@ CRYPTO_PAIRS = [
 
 ALL_PAIRS = FOREX_PAIRS + CRYPTO_PAIRS
 
-# Qo'shimcha alias lar - bular ham tanilsin
 PAIR_ALIASES = {
     "XAUUSD": "XAU/USD", "XAGUSD": "XAG/USD",
     "GOLD": "XAU/USD", "SILVER": "XAG/USD",
@@ -37,7 +36,7 @@ PAIR_ALIASES = {
     "BTCUSDT": "BTC/USDT", "ETHUSDT": "ETH/USDT",
     "BNBUSDT": "BNB/USDT", "SOLUSDT": "SOL/USDT",
     "XRPUSDT": "XRP/USDT", "ADAUSDT": "ADA/USDT",
-    "DOGEUSDT": "DOGE/USDT",
+    "DOGEUSDT": "DOGE/USDT", "MATICUSDT": "MATIC/USDT",
 }
 
 STRATEGIES = {
@@ -63,87 +62,89 @@ PAIR_LIST_TEXT = (
     "Chart screenshotini yuboring!"
 )
 
-def _gemini(prompt, image_b64=None):
-    url = GEMINI_URL + "?key=" + GEMINI_API_KEY
-    parts = []
+def _claude(prompt, image_b64=None):
+    """Claude API ga so'rov"""
+    headers = {
+        "Content-Type": "application/json",
+        "x-api-key": ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+    }
+    content = []
     if image_b64:
-        parts.append({"inline_data": {"mime_type": "image/jpeg", "data": image_b64}})
-    parts.append({"text": prompt})
+        content.append({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": "image/jpeg",
+                "data": image_b64,
+            }
+        })
+    content.append({"type": "text", "text": prompt})
+
     body = json.dumps({
-        "contents": [{"parts": parts}],
-        "generationConfig": {"temperature": 0.1, "maxOutputTokens": 1000}
+        "model": "claude-haiku-4-5-20251001",
+        "max_tokens": 1024,
+        "messages": [{"role": "user", "content": content}]
     }).encode()
+
     req = urllib.request.Request(
-        url, data=body,
-        headers={"Content-Type": "application/json"},
+        ANTHROPIC_URL,
+        data=body,
+        headers=headers,
         method="POST"
     )
     with urllib.request.urlopen(req, timeout=45) as r:
         res = json.loads(r.read().decode())
-    return res["candidates"][0]["content"]["parts"][0]["text"]
+    return res["content"][0]["text"]
 
 def _find_pair(text):
-    """Matn ichidan juftlikni topish"""
     text_up = text.strip().upper().replace(" ", "").replace("-", "")
-
-    # 1. To'g'ridan alias dan qidirish
     for alias, pair in PAIR_ALIASES.items():
         if alias in text_up:
             return pair
-
-    # 2. Barcha pairlardan qidirish (slash bilan)
     for pair in ALL_PAIRS:
         if pair.upper() in text_up:
             return pair
-
-    # 3. Slash siz qidirish
     for pair in ALL_PAIRS:
         noslash = pair.replace("/", "")
         if noslash in text_up:
             return pair
-
-    # 4. Birinchi so'z bilan qidirish
-    first = text_up.split()[0] if text_up.split() else ""
-    for pair in ALL_PAIRS:
-        if pair.split("/")[0] == first:
-            return pair
-
+    words = text_up.split()
+    if words:
+        for pair in ALL_PAIRS:
+            if pair.split("/")[0] == words[0]:
+                return pair
     return None
 
 async def detect_pair(image_bytes):
-    """Rasmdan juftlikni aniqlash"""
     b64 = base64.b64encode(image_bytes).decode()
-
     prompt = (
-        "Bu trading chart screenshotida qaysi instrument (juftlik) ko'rsatilgan?\n"
-        "Chartning yuqori chap burchagiga, sarlavhasiga qarab aniqla.\n"
-        "Masalan: XAUUSD, EURUSD, BTCUSDT, GBPUSD, XAU/USD kabi.\n"
-        "Faqat instrument nomini yoz, boshqa hech narsa yozma.\n"
-        "Agar ko'ra olmasang: UNKNOWN"
+        "Bu trading chart screenshotida qaysi instrument ko'rsatilgan?\n"
+        "Chartning yuqori chap burchagiga qarab aniqla.\n"
+        "Faqat instrument nomini yoz. Masalan: XAUUSD yoki EURUSD yoki BTCUSDT\n"
+        "Boshqa hech narsa yozma."
     )
-
     try:
-        text = await asyncio.to_thread(_gemini, prompt, b64)
+        text = await asyncio.to_thread(_claude, prompt, b64)
         pair = _find_pair(text)
         if pair:
             return pair
     except Exception as e:
         print("Pair detect xato:", e)
-
     return "UNKNOWN"
 
 def _strategy_prompt(key):
     prompts = {
         "auto":     "Eng mos strategiyani o'zing tanlaysan.",
         "trend":    "EMA 20, 50, 200 asosida trend yo'nalishini aniqlaysan.",
-        "rsi":      "RSI divergence topasan. 30 dan past oversold, 70 dan yuqori overbought.",
-        "sr":       "Kuchli support va resistance darajalaridan bounce ni kutasan.",
+        "rsi":      "RSI divergence topasan. 30 past=oversold, 70 yuqori=overbought.",
+        "sr":       "Kuchli support va resistance darajalaridan bounce kutasan.",
         "breakout": "Konsolidatsiya zonasidan breakout yo'nalishida signal beryasan.",
         "fib":      "Fibonacci 0.382, 0.5, 0.618 darajalaridan foydalanasan.",
         "macd":     "MACD liniyasi kesishuviga va histogrammaga qaraysan.",
         "bb":       "Bollinger Bands squeeze va breakout signallarini topasan.",
-        "pa":       "Pin Bar, Engulfing, Doji, Hammer candlestick patternlarini topasan.",
-        "smc":      "Order Block, Fair Value Gap, Liquidity Sweep, BOS, CHOCHni topasan.",
+        "pa":       "Pin Bar, Engulfing, Doji, Hammer patternlarini topasan.",
+        "smc":      "Order Block, Fair Value Gap, Liquidity Sweep, BOS topasan.",
         "scalp":    "5-15 daqiqalik qisqa muddatli kirish nuqtalarini topasan.",
     }
     return prompts.get(key, "")
@@ -173,25 +174,25 @@ async def analyze(image_bytes, balance, pair, strategy_key="auto"):
         '  "signal": "BUY",\n'
         '  "pair": "' + pair + '",\n'
         '  "timeframe": "M5",\n'
-        '  "entry": 5169.00,\n'
-        '  "sl": 5150.00,\n'
-        '  "tp": 5210.00,\n'
-        '  "rr_ratio": "1:2.1",\n'
+        '  "entry": 1.1000,\n'
+        '  "sl": 1.0950,\n'
+        '  "tp": 1.1100,\n'
+        '  "rr_ratio": "1:2.0",\n'
         '  "strategy": "' + strategy_name + '",\n'
         '  "confidence": "HIGH",\n'
-        '  "reason": "Sabab ozbekcha 2-3 jumla",\n'
+        '  "reason": "O\'zbek tilida 2-3 jumla sabab",\n'
         '  "risk_amount": ' + str(risk_amt) + ',\n'
         '  "lot_suggestion": 0.01,\n'
         '  "warning": null\n'
         "}\n\n"
         "signal: BUY, SELL yoki WAIT\n"
         "confidence: HIGH, MEDIUM yoki LOW\n"
-        "Agar aniq signal bo'lmasa: signal=WAIT\n"
+        "Agar aniq signal bo'lmasa signal=WAIT\n"
         "MUHIM: Faqat sof JSON, hech qanday ``` belgisi yo'q!"
     )
 
     try:
-        text = await asyncio.to_thread(_gemini, prompt, b64)
+        text = await asyncio.to_thread(_claude, prompt, b64)
         text = re.sub(r"```json|```", "", text).strip()
         m = re.search(r"\{.*\}", text, re.DOTALL)
         if m:
@@ -213,10 +214,10 @@ async def analyze(image_bytes, balance, pair, strategy_key="auto"):
             "rr_ratio": "N/A",
             "strategy": strategy_name,
             "confidence": "LOW",
-            "reason": "Gemini API bilan bog'lanishda muammo. Internet yoki API keyni tekshiring.",
+            "reason": "Tahlil qilishda xatolik. Qayta urinib ko'ring.",
             "risk_amount": risk_amt,
             "lot_suggestion": 0.01,
-            "warning": "Qayta urinib ko'ring",
+            "warning": "Qayta screenshot yuboring",
             "balance": balance,
             "risk_percent": risk_pct,
         }
@@ -238,12 +239,11 @@ def format_signal(data):
     risk_pct = data.get("risk_percent", 0)
     lot = data.get("lot_suggestion", 0.01)
 
-    sig_emoji = {"BUY": "BUY", "SELL": "SELL", "WAIT": "KUTING"}.get(sig, sig)
-    conf_text = {"HIGH": "YUQORI", "MEDIUM": "O'RTA", "LOW": "PAST"}.get(conf, conf)
+    conf_text = {"HIGH": "YUQORI", "MEDIUM": "ORTA", "LOW": "PAST"}.get(conf, conf)
 
     if sig == "WAIT":
         return (
-            "Signal yo'q — Kuting\n\n"
+            "Signal yoq — Kuting\n\n"
             "Juftlik: " + pair + "\n"
             "Taymfreym: " + tf + "\n"
             "Strategiya: " + strategy + "\n\n"
@@ -251,8 +251,10 @@ def format_signal(data):
             + ("Ogohlantirish: " + warning if warning else "Bozor noaniq. Sabr qiling.")
         )
 
+    sig_text = "BUY SIGNAL" if sig == "BUY" else "SELL SIGNAL"
+
     lines = [
-        "--- " + sig_emoji + " SIGNAL ---",
+        "--- " + sig_text + " ---",
         "",
         "Juftlik:     " + pair,
         "Taymfreym:   " + tf,
