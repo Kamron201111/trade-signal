@@ -6,40 +6,59 @@ from config import FREE_DAILY_LIMIT
 
 BALANCE, SCREENSHOT = 2, 3
 
+def _check_limit(user_id):
+    prem = db_is_premium(user_id)
+    if prem:
+        return True, 0
+    usage = db_get_usage(user_id)
+    remaining = FREE_DAILY_LIMIT - usage
+    return remaining > 0, remaining
+
+async def _limit_exceeded(target, context):
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("💎 Premium olish", callback_data="premium_info")],
+        [InlineKeyboardButton("Orqaga", callback_data="main_menu")],
+    ])
+    text = (
+        "Kunlik limit tugadi!\n\n"
+        "Bugun " + str(FREE_DAILY_LIMIT) + " ta bepul tahlildan foydalandingiz.\n\n"
+        "Cheksiz tahlil uchun Premium oling!"
+    )
+    if hasattr(target, "edit_message_text"):
+        await target.edit_message_text(text, reply_markup=kb)
+    else:
+        await target.reply_text(text, reply_markup=kb)
+
+# Inline callback orqali
 async def start_analyze(update, context):
     query = update.callback_query
     await query.answer()
     user_id = update.effective_user.id
-    user = db_get_user(user_id)
-    if not user:
+    if not db_get_user(user_id):
         await query.edit_message_text("Avval /start bosing!")
         return ConversationHandler.END
+    ok, remaining = _check_limit(user_id)
+    if not ok:
+        await _limit_exceeded(query, context)
+        return ConversationHandler.END
     prem = db_is_premium(user_id)
-    if not prem:
-        usage = db_get_usage(user_id)
-        remaining = FREE_DAILY_LIMIT - usage
-        if remaining <= 0:
-            kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("💎 Premium olish", callback_data="premium_info")],
-                [InlineKeyboardButton("Orqaga", callback_data="main_menu")],
-            ])
-            await query.edit_message_text(
-                "Kunlik limit tugadi!\n\n"
-                "Bugun " + str(FREE_DAILY_LIMIT) + " ta bepul tahlildan foydalandingiz.\n\n"
-                "Cheksiz tahlil uchun Premium oling!",
-                reply_markup=kb
-            )
-            return ConversationHandler.END
-        rem_text = "Bugun qolgan: " + str(remaining) + "/" + str(FREE_DAILY_LIMIT) + "\n\n"
-    else:
-        rem_text = "Premium — Cheksiz tahlil!\n\n"
-    await query.edit_message_text(
-        rem_text +
-        "Savdo balansingiz qancha? (USD)\n\n"
-        "Faqat raqam yozing:\n"
-        "Masalan: 100\n\n"
-        "Minimum: $5"
-    )
+    rem_text = "Cheksiz tahlil!\n\n" if prem else "Bugun qolgan: " + str(remaining) + "/" + str(FREE_DAILY_LIMIT) + "\n\n"
+    await query.edit_message_text(rem_text + "Savdo balansingiz qancha? (USD)\nMasalan: 100\nMinimum: $5")
+    return BALANCE
+
+# Pastki keyboard tugmasi orqali
+async def start_analyze_text(update, context):
+    user_id = update.effective_user.id
+    if not db_get_user(user_id):
+        await update.message.reply_text("Avval /start bosing!")
+        return ConversationHandler.END
+    ok, remaining = _check_limit(user_id)
+    if not ok:
+        await _limit_exceeded(update.message, context)
+        return ConversationHandler.END
+    prem = db_is_premium(user_id)
+    rem_text = "Cheksiz tahlil!\n\n" if prem else "Bugun qolgan: " + str(remaining) + "/" + str(FREE_DAILY_LIMIT) + "\n\n"
+    await update.message.reply_text(rem_text + "Savdo balansingiz qancha? (USD)\nMasalan: 100\nMinimum: $5")
     return BALANCE
 
 async def get_balance(update, context):
@@ -52,8 +71,7 @@ async def get_balance(update, context):
         await update.message.reply_text("Minimum balans $5. Qayta kiriting:")
         return BALANCE
     context.user_data["balance"] = balance
-    user_id = update.effective_user.id
-    strategy_key = db_get_strategy(user_id)
+    strategy_key = db_get_strategy(update.effective_user.id)
     strategy_name = STRATEGIES.get(strategy_key, "Avtomatik")
     await update.message.reply_text(
         "Balans: $" + str(balance) + "\n"
@@ -65,7 +83,7 @@ async def get_balance(update, context):
 async def get_screenshot(update, context):
     user_id = update.effective_user.id
     photo = update.message.photo[-1]
-    msg = await update.message.reply_text("Tahlil qilinmoqda, biroz kuting...")
+    msg = await update.message.reply_text("Tahlil qilinmoqda...")
     try:
         file = await photo.get_file()
         img_bytes = bytes(await file.download_as_bytearray())
@@ -88,10 +106,8 @@ async def get_screenshot(update, context):
         print("Screenshot xato:", e)
         await msg.edit_text(
             "Tahlil qilishda xatolik!\n\n"
-            "Iltimos:\n"
-            "- Aniq chart screenshotini yuboring\n"
-            "- Juftlik nomi ko'rinib tursin\n"
-            "- Internetni tekshiring"
+            "Iltimos aniq chart screenshotini yuboring.\n"
+            "Juftlik nomi ko'rinib tursin."
         )
     return ConversationHandler.END
 
@@ -111,20 +127,19 @@ async def strategy_menu(update, context):
         buttons.append([InlineKeyboardButton("💎 Premium — barcha strategiyalar", callback_data="premium_info")])
     buttons.append([InlineKeyboardButton("Orqaga", callback_data="main_menu")])
     await query.edit_message_text(
-        "Strategiyani tanlang:\n\n"
-        + ("Hozirgi: " + STRATEGIES.get(current, current)),
+        "Strategiyani tanlang:\n\nHozirgi: " + STRATEGIES.get(current, current),
         reply_markup=InlineKeyboardMarkup(buttons)
     )
 
 async def set_strategy(update, context):
     query = update.callback_query
-    await query.answer()
     user_id = update.effective_user.id
     prem = db_is_premium(user_id)
     key = query.data.replace("setstrat_", "")
     if not prem and key not in FREE_STRATEGIES:
         await query.answer("Bu strategiya faqat Premium uchun!", show_alert=True)
         return
+    from utils.database import db_set_strategy
     db_set_strategy(user_id, key)
-    await query.answer("Strategiya o'zgartirildi!", show_alert=False)
+    await query.answer("Strategiya saqlandi!", show_alert=False)
     await strategy_menu(update, context)
